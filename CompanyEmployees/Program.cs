@@ -1,21 +1,39 @@
+using CompanyEmployees.Contracts;
 using CompanyEmployees.Entities.Models;
-using CompanyEmployees.Extensions;
 using CompanyEmployees.JwtFeatures;
 using CompanyEmployees.Repository;
 using EmailService;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.ConfigureCors();
-builder.Services.ConfigureIISIntegration();
-builder.Services.ConfigureSqlContext(builder.Configuration);
-builder.Services.ConfigureRepositoryManager();
+//builder.Services.ConfigureCors();
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("CorsPolicy", builder =>
+        builder.AllowAnyOrigin()
+        .AllowAnyMethod()
+        .AllowAnyHeader());
+});
+//builder.Services.ConfigureIISIntegration();
+builder.Services.Configure<IISOptions>(options =>
+{
+
+});
+//builder.Services.ConfigureSqlContext(builder.Configuration);
+builder.Services.AddDbContext<RepositoryContext>(opts =>
+               opts.UseSqlServer(builder.Configuration.GetConnectionString("sqlConnection"), b => b.MigrationsAssembly("CompanyEmployees")));
+//builder.Services.ConfigureRepositoryManager();
+builder.Services.AddScoped<IRepositoryManager, RepositoryManager>();
 builder.Services.AddAutoMapper(typeof(Program));
+
+builder.Services.AddControllers();
 
 builder.Services.AddIdentity<User, IdentityRole>(opt =>
 {
@@ -53,15 +71,20 @@ builder.Services.AddAuthentication(opt =>
     };
 });
 
+builder.Services.AddAuthorizationBuilder()
+    .AddPolicy(Permissions.Products.View, policy => policy.Requirements.Add(new PermissionRequirement(Permissions.Products.View)))
+    .AddPolicy(Permissions.Products.Create, policy => policy.Requirements.Add(new PermissionRequirement(Permissions.Products.Create)));
+
 builder.Services.AddScoped<JwtHandler>();
 
 var emailConfig = builder.Configuration
     .GetSection("EmailConfiguration")
     .Get<EmailConfiguration>();
+
 builder.Services.AddSingleton(emailConfig);
 builder.Services.AddScoped<IEmailSender, EmailSender>();
-
-builder.Services.AddControllers();
+builder.Services.AddScoped<IAuthorizationHandler, PermissionHandler>();
+builder.Services.AddScoped<RoleToClaimMigration>(); // Register the migration service
 
 // Add Swagger services
 builder.Services.AddSwaggerGen(c =>
@@ -98,6 +121,13 @@ builder.Services.AddSwaggerGen(c =>
 });
 
 var app = builder.Build();
+
+// Run the migration during startup
+using (var scope = app.Services.CreateScope())
+{
+    var migrationService = scope.ServiceProvider.GetRequiredService<RoleToClaimMigration>();
+    migrationService.MigrateAsync().Wait(); // Run the migration
+}
 
 app.UseHttpsRedirection();
 
